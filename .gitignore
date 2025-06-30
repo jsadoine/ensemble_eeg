@@ -114,6 +114,8 @@ env.bak/
 venv.bak/
 .conda
 .vscode
+.pixi
+pixi.toml
 
 # Spyder project settings
 .spyderproject
@@ -138,3 +140,7 @@ dmypy.json
 
 # Mac stuff
 backup/
+
+# pixi environments
+.pixi
+*.egg-info
