@@ -4,8 +4,11 @@ import warnings
 from collections import namedtuple
 from datetime import datetime, timedelta
 from itertools import starmap
+import hashlib
+import csv
 
 import dateparser
+from datetime import datetime
 import numpy as np
 
 
@@ -205,6 +208,7 @@ def write_edf_header(fd, header):
                     m = val[1]
                     s = val[2] % 100
                     val = f"{h:02d}.{m:02d}.{s:02d}"
+                val = str(val)  # Conversion en chaîne de caractères
                 val = bytes(val, encoding="ascii").ljust(size, b" ")
 
             assert len(val) == size
@@ -216,6 +220,7 @@ def write_edf_header(fd, header):
                     val = b" " * size
 
                 if not isinstance(val, bytes):
+                    val = str(val)  # Conversion en chaîne de caractères
                     val = bytes(val, encoding="ascii").ljust(size, b" ")
 
                 if len(val) > size:
@@ -329,48 +334,55 @@ def fix_edf_header(fd):
 
 
 def get_patient_age(header):
-    """Get the age of the patient in days from the header of the edf file.
+    """Get the age of the patient in days from the header of the EDF file.
 
     Parameters
     ----------
     header: Header
         The EDF header object containing information about the data.
-    """
-    # get the info
-    for header_info, val in zip(HEADER, header, strict=False):
-        field_name = header_info[0]
-        if field_name == "local_patient_identification":
-            lpi = val.split(" ")
-            birthdate = lpi[2]
-        elif field_name == "local_recording_identification":
-            lri = val.split(" ")
-            recdate = lri[1]
-        elif field_name == "startdate_of_recording":
-            startdate = val
 
-    # parse the dates
+    Returns
+    -------
+    int
+        The age of the patient in days.
+    """
+    # Extract the relevant fields from the header
+    local_patient_identification = header.local_patient_identification
+    local_recording_identification = header.local_recording_identification
+    startdate_of_recording = header.startdate_of_recording
+
+    # Parse the fields
+    lpi_parts = local_patient_identification.split(" ")
+    birthdate_str = lpi_parts[2]  # e.g., "02-APR-2001"
+
+    lri_parts = local_recording_identification.split(" ")
+    recdate_str = lri_parts[1]  # e.g., "27-MAR-2006"
+
+    # Parse the dates
     try:
-        birthdate = dateparser.parse(birthdate, date_formats=["%d-%b-%Y"])
+        birthdate = datetime.strptime(birthdate_str, "%d-%b-%Y")
     except ValueError as err:
-        raise ValueError(f"Wrong formatting of birthdate: {birthdate}") from err
+        raise ValueError(f"Wrong formatting of birthdate: {birthdate_str}") from err
+
     try:
-        recdate = dateparser.parse(recdate, date_formats=["%d-%b-%Y"])
+        recdate = datetime.strptime(recdate_str, "%d-%b-%Y")
     except ValueError as err:
-        raise ValueError(f"Wrong formatting of recording startdate: {recdate}") from err
+        raise ValueError(f"Wrong formatting of recording startdate: {recdate_str}") from err
+
     try:
-        startdate = dateparser.parse(startdate, date_formats=["%d.%m.%y"])
+        startdate = datetime.strptime(startdate_of_recording, "%d.%m.%y")
     except ValueError as err:
-        raise ValueError(f"Wrong formatting of startdate: {startdate}") from err
-    # check consistency
-    assert recdate == startdate, (
-        f"These values should be equal (?): {recdate} ; {startdate}"
+        raise ValueError(f"Wrong formatting of startdate: {startdate_of_recording}") from err
+
+    # Check consistency between recdate and startdate
+    assert recdate.day == startdate.day and recdate.month == startdate.month and recdate.year == startdate.year, (
+        f"These values should be equal: recording date {recdate} ; startdate {startdate}"
     )
 
-    # compute the age in days
+    # Compute the age in days
     age_in_days = (recdate - birthdate).days
 
     return age_in_days
-
 
 def anonymize_edf_header(fd):
     """
@@ -387,48 +399,68 @@ def anonymize_edf_header(fd):
 
     header = read_edf_header(fd)
     data = read_edf_data(fd, header)
-
-    filename = os.path.splitext(os.path.basename(fd))[0]
-    ext = os.path.splitext(os.path.basename(fd))[1]
     folder = os.path.dirname(fd)
-    split_filename = filename.split("_")
-    is_ensemble_approved = (
-        split_filename[0][:4] == "sub-"
-        and len(split_filename[0][4:]) == 10
-        and ("E" in split_filename[0])
-    )
+    # Generate PSC1
+    mapping_file = os.path.join(folder, "psc1_mapping.csv")
+    psc1 = generate_psc1(fd, header, 
+                         mapping_file=mapping_file)
 
-    # define anonymized versions of the header fields
-    if is_ensemble_approved:
-        pseudo_code = split_filename[0][4:]
-        anonymized_pid = pseudo_code + " X 01-JAN-1985 X"
-    else:
-        anonymized_pid = "X X 01-JAN-1985 X"
+    # Anonymisation des identifiants
+    anonymized_pid = f"X X 01-JAN-1985 {psc1}"
+    try:
+        age_in_days = get_patient_age(header)
+        startdate = datetime(1985, 1, 1) + timedelta(age_in_days)
+        startdate_str = startdate.strftime("%d.%m.%y")
+    except:
+        startdate_str = "01.01.85"  # default value 
 
-    # define the startdate as 01/01/1985 + the patient age
-    age_in_days = get_patient_age(header)
-    startdate = datetime(1985, 1, 1) + timedelta(age_in_days)
+    anonymized_rid = f"Startdate {startdate_str} X X ANON-EEG"
+    anonymized_starttime = "00.00.00"
 
-    # use MONTH DICT to bypass local language month abbreviations
-    startdate_str = f"{startdate.date().day:0>2}-{MONTH_DICT[startdate.date().month]}-{startdate.date().year:0>4}"
-    anonymized_rid = f"Startdate {startdate_str} X X X"
-
-    startdate_str = startdate.strftime("%d.%m.%y")
-    anonymized_startdate = startdate_str
-    # anonymized_starttime = "00.00.00"
-
+    # Mise à jour du header
     header = header._replace(
         local_patient_identification=anonymized_pid,
         local_recording_identification=anonymized_rid,
-        startdate_of_recording=anonymized_startdate,
-        # starttime_of_recording=anonymized_starttime,
+        startdate_of_recording=startdate_str,
+        starttime_of_recording=anonymized_starttime,
     )
+    print(header)
+    # Vérification des valeurs min/max (optionnel)
+    for signal in header.signals:
+        if signal.physical_maximum <= signal.physical_minimum:
+            warnings.warn(f"Channel {signal.label}: physical max <= physical min")
+        if signal.digital_maximum <= signal.digital_minimum:
+            warnings.warn(f"Channel {signal.label}: digital max <= digital min")
 
-    fd_out = os.path.join(folder, filename + "_ANONYMIZED" + ext)
+    # Écriture du fichier anonymisé
+    # filename = os.path.splitext(os.path.basename(fd))[0]
+    ext = os.path.splitext(os.path.basename(fd))[1]
+    fd_out = os.path.join(folder, f"{psc1}_eeg" + ext)
+    print(f"writing anonymed file to {fd_out} ...", end="", flush=True)
+
     write_edf_header(fd_out, header)
     write_edf_data(fd_out, data)
 
     print("done")
+
+def organize_anonymized_files(folder):
+    """
+    Organizes anonymized EDF files in the  specified base folder
+    """
+    files = os.listdir(folder)
+    # New directory for anonymized files
+    subdir = os.path.join(os.path.dirname(folder), "anonymized_files")
+    os.makedirs(subdir, exist_ok=True)
+    # Create sub-folder if it does not exist
+    for file in files :
+        if file.endswith('_eeg.edf') and file.startswith('sub-'):
+            path_to_file = os.path.join(folder, file)
+            # move file to sub-folder
+            shutil.move(path_to_file, os.path.join(subdir, file))
+        if file == 'psc1_mapping.csv':
+            path_to_file = os.path.join(folder, file)
+            # move file to sub-folder
+            shutil.move(path_to_file, os.path.join(subdir, file))
 
 
 def rename_for_ensemble(fd):
@@ -593,7 +625,6 @@ def check_filename_ensemble(filename):
 
     return do_renaming
 
-
 def get_subject_code():
     """
     Helper code to get subject code with user input
@@ -627,6 +658,44 @@ def get_subject_code():
 
     return subject_code
 
+def generate_psc1(file_path, header, mapping_file="psc1_mapping.csv"):
+    """
+    Automatically generates a PSC1 (Pseudo-Subject Code) from EDF file metadata.
+    The PSC1 is a SHA-256 hash of unique file information, ensuring traceability while anonymizing.
+    A mapping file (CSV) is created to link the PSC1 to the original filename.
+
+    Args:
+        file_path (str): Path to the EDF file.
+        header: EDF header object containing metadata (e.g., recording date, number of signals).
+        mapping_file (str, optional): Path to the CSV file storing the PSC1-to-filename mapping.
+                                      Defaults to "psc1_mapping.csv".
+
+    Returns:
+        str: The generated PSC1 (e.g., "sub-a1b2c3d4e5").
+    """
+    # Extract unique file information
+    file_name = os.path.basename(file_path)  # e.g., "JEANDUPONT_20060327.edf"
+    startdate = header.startdate_of_recording  # e.g., "27.03.06"
+    starttime = header.starttime_of_recording  # e.g., "13.39.38"
+    num_signals = header.number_of_signals     # e.g., 25
+    duration = header.duration_of_a_data_record * header.number_of_data_records  # Total recording duration
+
+    # Create a unique string combining all metadata
+    unique_string = f"{file_name}_{startdate}_{starttime}_{num_signals}_{duration}"
+    print(f"Unique string for hashing: {unique_string}")
+
+    # Generate a SHA-256 hash of the unique string
+    sha256_hash = hashlib.sha256(unique_string.encode()).hexdigest()
+
+    # Construct the PSC1 using the first 10 characters of the hash
+    psc1 = f"sub-{sha256_hash[:10]}"  # e.g., "sub-a1b2c3d4e5"
+
+    # Save the mapping to a CSV file for traceability
+    with open(mapping_file, mode="a", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow([psc1, file_name])  # PSC1, Original Filename
+
+    return psc1
 
 def get_acquisition_type(header):
     """

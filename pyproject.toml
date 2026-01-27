@@ -3,8 +3,8 @@ requires = ["setuptools>=77.0.3", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ensemble_eeg"
-version = "0.2.0"
+name = "ensemble_eeg-custom"
+version = "0.2.1-custom"
 dependencies = [
     "fire",
     "numpy",
@@ -13,13 +13,14 @@ dependencies = [
 ]
 requires-python = ">=3.10"
 authors = [
-  { name="Bauke van der Velde" },
+  { name="Bauke van der Velde" }
+  { name = "Jérémy Sadoine" },
 ]
 maintainers = [
   { name="Aymeric Gaudin" },
   { name="Dimitri Papadopoulos Orfanos" },
 ]
-description = "Package used to analyze preprocess EDF files for the ENSEMBLE study"
+description = "Package customisé pour anonymiser et pré-traiter les fichiers EDF pour l'étude ENSEMBLE (version modifiée par Jérémy Sadoine)"
 readme = "README.md"
 license-files = [ "LICENSE", "NOTICE" ]
 classifiers = [
@@ -31,7 +32,7 @@ classifiers = [
 anonymize_eeg_ensemble = "ensemble_eeg:_anonymize_eeg_ensemble_main"
 
 [project.urls]
-Repository = "https://github.com/ensemble2/ensemble_eeg"
+Repository = "https://github.com/jsadoine/ensemble_eeg-custom.git"
 
 [tool.setuptools]
 packages = ["ensemble_eeg"]
